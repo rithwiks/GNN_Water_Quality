@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader
+import subprocess
 
 def load_data():
     diatoms = pd.read_csv('DataDiatomGNN_GTstudentprojectGT/DiatomInventories_GTstudentproject.csv', sep=';')
@@ -118,10 +119,15 @@ class Net(nn.Module):
         return x
 
 
-def train_model(model, train_dataloader, criterion, optimizer, epochs=4):
+def train_model(model, train_dataloader, criterion, optimizer, epochs=2):
+    training_loss = []
+    training_accuracy = []
+
     for epoch in range(epochs):
         correct = 0
         total = 0
+        epoch_loss = 0
+        
         for i, data in enumerate(tqdm(train_dataloader)):
             x, y, keys = data
             optimizer.zero_grad()
@@ -129,42 +135,50 @@ def train_model(model, train_dataloader, criterion, optimizer, epochs=4):
             loss = criterion(output, y)
             loss.backward()
             optimizer.step()
+
+            epoch_loss += loss.item()
             _, predicted = torch.max(output.data, 1)
             total += y.size(0)
             correct += (predicted == y).sum().item()
-            if i == len(train_dataloader)-1:
-                print(f'Epoch {epoch}, Loss {loss.item()}, Accuracy {100 * correct / total}, {i}/{len(train_dataloader)}')
-    
+
+        avg_loss = epoch_loss / len(train_dataloader)
+        accuracy = 100 * correct / total
+
+        training_loss.append(avg_loss)
+        training_accuracy.append(accuracy)
+        
+        print(f'Epoch {epoch+1}, Loss: {avg_loss:.4f}, Accuracy: {accuracy:.2f}%')
+
     print('Finished Training')
     torch.save(model, 'diatom_model_complete.pth')
     print('Trained model saved.')
 
+    np.save('training_loss.npy', training_loss)
+    np.save('training_accuracy.npy', training_accuracy)
+
+    # subprocess.run(["python", "evaluation.py"])
+
+diatoms, diatoms_per_sampling_operation, pressures_per_sampling_operation = load_data()
+sampling_op_to_tensor = prepare_tensors(diatoms, diatoms_per_sampling_operation, pressures_per_sampling_operation)
+
+input_dim = diatoms['onehot'].max()+1
+output_dim = 2
+
+model = Net(input_dim, output_dim, 4096, 1024, 256)
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+dataset_bin = DiatomDatasetBinary(sampling_op_to_tensor, x='scaled_onehot', y='Nitrates_Status1Y')
+
+train_size = int(0.8 * len(dataset_bin))
+test_size = len(dataset_bin) - train_size
+train_dataset, test_dataset = torch.utils.data.random_split(dataset_bin, [train_size, test_size])
+train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+
+global test_dataloader
+test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True)
 
 def main():
-    diatoms, diatoms_per_sampling_operation, pressures_per_sampling_operation = load_data()
-    sampling_op_to_tensor = prepare_tensors(diatoms, diatoms_per_sampling_operation, pressures_per_sampling_operation)
-    
-    input_dim = diatoms['onehot'].max()+1
-    output_dim = 2
-
-    model = Net(input_dim, output_dim, 4096, 1024, 256)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-
-    dataset_bin = DiatomDatasetBinary(sampling_op_to_tensor, x='scaled_onehot', y='Nitrates_Status1Y')
-    y_dist_bin = {0: 0, 1: 0}
-    for i in range(len(dataset_bin)):
-        y_dist_bin[dataset_bin[i][1]] += 1
-    print('Y distribution (0 is Good, 1 is Mediocre/Bad):', y_dist_bin)
-
-    # split the dataset into training and test
-    train_size = int(0.8 * len(dataset_bin))
-    test_size = len(dataset_bin) - train_size
-    # train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
-    train_dataset, test_dataset = torch.utils.data.random_split(dataset_bin, [train_size, test_size])
-    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=32, shuffle=True)
-      
     train_model(model, train_dataloader, criterion, optimizer)
 
 if __name__ == "__main__":
